@@ -1,5 +1,5 @@
 .env
-datahistorica/AVEEUSDT/historico_5m.csv
-datahistorica/AVEEUSDT/historico_15m.csv
-datahistorica/AVEEUSDT/historico_1h.csv
-datahistorica/AVEEUSDT/historico_4h.csv
+data_historica/AVEEUSDT/historico_5m.csv
+data_historica/AVEEUSDT/historico_15m.csv
+data_historica/AVEEUSDT/historico_1h.csv
+data_historica/AVEEUSDT/historico_4h.csv
