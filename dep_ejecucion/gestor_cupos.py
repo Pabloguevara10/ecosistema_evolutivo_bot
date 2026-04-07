@@ -1,60 +1,86 @@
 # =============================================================================
-# NOMBRE: gestor_cupos.py
-# UBICACIÓN: /5_DEPARTAMENTO_EJECUCION/
-# OBJETIVO: Administrar exposición, lotes máximos y promediado inteligente.
+# UBICACIÓN: /dep_ejecucion/gestor_cupos.py
+# OBJETIVO: Control de tráfico dual (Core-Satellite) para estrategias concurrentes.
+# Aislamiento de margen y fraccionamiento de riesgo institucional.
 # =============================================================================
 
+import logging
+
 class GestorCupos:
-    def __init__(self, max_ordenes=2, distancia_minima_pct=0.015):
-        # Límite estricto de exposición total
-        self.max_ordenes = max_ordenes
-        # Distancia porcentual obligatoria para permitir un segundo disparo (Ej: 1.5%)
-        self.distancia_minima = distancia_minima_pct
-        self.posiciones_activas = [] 
-        # Formato de tracking: [{'id': '123', 'side': 'LONG', 'entry_price': 100.0}]
+    def __init__(self, capital_total=1500.0, max_operaciones_light=2, max_operaciones_vip=1):
+        self.capital_total = capital_total
+        
+        # 🚦 Configuración de Slots (Semáforo Dual)
+        self.max_light = max_operaciones_light  # Espacios para el Motor MTF
+        self.max_vip = max_operaciones_vip      # Espacio exclusivo para Francotirador Elliott
+        
+        # ⚖️ Partición de Riesgo Institucional
+        self.riesgo_light = 0.015  # 1.5% de riesgo por trade para MTF
+        self.riesgo_vip = 0.030    # 3.0% de riesgo por trade para Elliott (Asimetría alta)
+        
+        # 📦 Control de Estado Interno
+        self.operaciones_activas = {
+            'LIGHT': [],
+            'VIP': []
+        }
+        
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        self.logger = logging.getLogger("GestorCupos")
 
-    def solicitar_cupo(self, side: str, precio_propuesto: float) -> bool:
+    def actualizar_capital(self, nuevo_capital):
+        """Actualiza el capital vivo tras cada operación cerrada para aplicar interés compuesto."""
+        self.capital_total = nuevo_capital
+
+    def registrar_apertura(self, trade_id, tipo_estrategia):
+        """Bloquea un slot formalmente tras la confirmación de Binance."""
+        if tipo_estrategia == 'LIGHT':
+            self.operaciones_activas['LIGHT'].append(trade_id)
+        elif tipo_estrategia == 'VIP':
+            self.operaciones_activas['VIP'].append(trade_id)
+        self.logger.info(f"🟢 Slot Ocupado [{tipo_estrategia}]: {trade_id}")
+
+    def registrar_cierre(self, trade_id):
+        """Libera el slot cuando el Monitor de Posiciones detecta cierre por SL/TP."""
+        if trade_id in self.operaciones_activas['LIGHT']:
+            self.operaciones_activas['LIGHT'].remove(trade_id)
+            self.logger.info(f"🔴 Slot Liberado [LIGHT]: {trade_id}")
+        elif trade_id in self.operaciones_activas['VIP']:
+            self.operaciones_activas['VIP'].remove(trade_id)
+            self.logger.info(f"🔴 Slot Liberado [VIP]: {trade_id}")
+
+    def solicitar_autorizacion(self, tipo_estrategia, precio_entrada, precio_sl, leverage=10):
         """
-        Evalúa si la nueva señal tiene permiso para ser ejecutada basándose
-        en el riesgo global de la cuenta.
+        Evalúa el tráfico y calcula el lotaje milimétrico.
+        Retorna: (Autorizado: bool, Cantidad_Monedas: float, Mensaje: str)
         """
-        # 1. Filtro de Capacidad Máxima Global
-        if len(self.posiciones_activas) >= self.max_ordenes:
-            print(f"🛑 [GESTOR CUPOS] DENEGADO: Límite máximo de {self.max_ordenes} operaciones activas alcanzado.")
-            return False
+        # 1. Verificación de Semáforo (Aislamiento de Estrategias)
+        if tipo_estrategia == 'LIGHT':
+            if len(self.operaciones_activas['LIGHT']) >= self.max_light:
+                return False, 0.0, "Rechazado: Cupos LIGHT agotados"
+            riesgo_aplicar = self.riesgo_light
+            
+        elif tipo_estrategia == 'VIP':
+            if len(self.operaciones_activas['VIP']) >= self.max_vip:
+                return False, 0.0, "Rechazado: Cupo VIP (Elliott) agotado"
+            riesgo_aplicar = self.riesgo_vip
+        else:
+            return False, 0.0, "Rechazado: Clasificación de estrategia desconocida"
 
-        # 2. Filtro de Separación de Precio (Si ya existe una orden activa en la misma dirección)
-        for pos in self.posiciones_activas:
-            if pos['side'] == side:
-                precio_base = pos['entry_price']
-                
-                # Calculamos la distancia porcentual absoluta
-                distancia_actual = abs(precio_base - precio_propuesto) / precio_base
-                
-                if distancia_actual < self.distancia_minima:
-                    print(f"🛑 [GESTOR CUPOS] DENEGADO: El precio (${precio_propuesto}) está muy cerca de la orden previa (${precio_base}).")
-                    print(f"   Distancia actual: {distancia_actual*100:.2f}%. Requerida: {self.distancia_minima*100:.2f}%.")
-                    return False
-                else:
-                    # Validar que el precio esté "en contra" (Drawdown temporal) para mejorar el promedio.
-                    # No gastamos el segundo cupo si la primera orden ya está en grandes ganancias.
-                    if (side == 'BUY' and precio_propuesto > precio_base) or \
-                       (side == 'SELL' and precio_propuesto < precio_base):
-                        print("🛑 [GESTOR CUPOS] DENEGADO: El nuevo precio no mejora el promedio de entrada anterior.")
-                        return False
+        # 2. Cálculo de Riesgo Fraccionado (Positon Sizing)
+        distancia_sl_abs = abs(precio_entrada - precio_sl)
+        if distancia_sl_abs == 0:
+            return False, 0.0, "Rechazado: Distancia de Stop Loss inválida (0)"
+            
+        riesgo_usd = self.capital_total * riesgo_aplicar
+        cantidad_monedas = riesgo_usd / distancia_sl_abs
+        
+        # 3. Filtro de Protección de Margen (Margin Call Prevention)
+        margen_requerido = (cantidad_monedas * precio_entrada) / leverage
+        
+        # El bot no permitirá que ninguna operación inmovilice más del 30% de la cuenta
+        if margen_requerido > (self.capital_total * 0.30): 
+            self.logger.warning(f"⚠️ Operación {tipo_estrategia} rechazada: Requiere inmovilizar {margen_requerido:.2f} USD de margen.")
+            return False, 0.0, "Rechazado: Exposición de margen excesiva"
 
-        print("✅ [GESTOR CUPOS] APROBADO: Cumple parámetros de exposición y distancia espacial.")
-        return True
-
-    def registrar_entrada(self, orden_id: str, side: str, entry_price: float):
-        """Añade la orden al registro activo una vez disparada en el Exchange."""
-        self.posiciones_activas.append({
-            'id': orden_id,
-            'side': side,
-            'entry_price': entry_price
-        })
-
-    def liberar_cupo(self, orden_id: str):
-        """Elimina una orden del registro cuando toca TP o SL."""
-        self.posiciones_activas = [pos for pos in self.posiciones_activas if pos['id'] != orden_id]
-        print(f"🔓 [GESTOR CUPOS] Orden {orden_id} cerrada. Cupo liberado.")
+        self.logger.info(f"✅ Autorizado [{tipo_estrategia}]: {cantidad_monedas:.3f} AAVE | Riesgo: {riesgo_usd:.2f} USD")
+        return True, cantidad_monedas, "Autorizado"

@@ -49,7 +49,7 @@ class Config:
     G_FILTRO_MACD_MIN = 0.0          
     G_FILTRO_OBV_SLOPE_MIN = -500    
     G_TP_NORMAL = 0.035; G_SL_NORMAL = 0.020; G_TRAIL_TRIGGER = 0.50
-    INITIAL_CAPITAL = 1000
+    INITIAL_CAPITAL = 2000
 
 # =============================================================================
 # 3. MOTOR DE PROCESAMIENTO Y SIMULACIÓN

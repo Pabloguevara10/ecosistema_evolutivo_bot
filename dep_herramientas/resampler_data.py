@@ -64,6 +64,9 @@ class ResamplerData:
             self.generar_temporalidad(df_base, '1h', '1h')
             self.generar_temporalidad(df_base, '4h', '4h')
             
+            # NUEVO: Generar temporalidad de 1 Día para conciencia situacional
+            self.generar_temporalidad(df_base, '1D', '1d')
+            
             print(f"🏁 Todas las transformaciones de datos para {self.symbol} han finalizado.")
             
         except Exception as e:
